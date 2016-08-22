@@ -13,6 +13,7 @@ DESCRIPTION
 package spider
 
 import (
+	"beegomap"
 	"io"
 	"net/http"
 	"net/url"
@@ -52,7 +53,7 @@ type Spider struct {
 	threadCount   int
 	targetUrl     *regexp.Regexp
 	jobs          chan Job
-	visitedUrl    map[string]bool
+	visitedUrl    *beegomap.BeeMap //map[string]bool
 	wg            sync.WaitGroup
 	stop          chan bool
 }
@@ -124,15 +125,26 @@ func (s *Spider) parseHtml(b io.Reader, job Job) []string {
 			u, _ := url.Parse(job.url)
 			// 相对路径
 			if !hasProto {
-				link = u.Scheme + "://" + u.Host + "/"+ link
+				link = u.Scheme + "://" + u.Host + "/" + link
 			}
 			// 检查url是否为需要存储的目标网页url格式
 			if s.checkUrlRegexp(link) {
 				// 保存为文件
 				go s.save(link)
 			}
-			if !s.visitedUrl[link] && job.depth < s.maxDepth {
-				urls = append(urls, link)
+
+			//if !s.visitedUrl[link] && job.depth < s.maxDepth {
+			if job.depth < s.maxDepth {
+				res := s.visitedUrl.Get(link)
+				if res != nil {
+					if res.(bool) == false {
+						l4g.Debug("debug...%+v,link:%s", job, link)
+						urls = append(urls, link)
+					}
+				} else {
+					l4g.Debug("debug...%+v,link:%s", job, link)
+					urls = append(urls, link)
+				}
 			}
 		}
 	}
@@ -182,7 +194,7 @@ CRAWL:
 			l4g.Info("spider stop...")
 			break CRAWL
 		case job := <-s.jobs:
-	        l4g.Info("goroutine#%d parsing url:%s, depth:%d",id, job.url, job.depth)
+			l4g.Info("goroutine#%d parsing url:%s, depth:%d", id, job.url, job.depth)
 			s.work(job)
 			// 抓取间隔控制
 			time.Sleep(time.Duration(s.crawlInterval) * time.Second)
@@ -200,23 +212,29 @@ CRAWL:
 func (s *Spider) work(job Job) {
 	defer s.wg.Done()
 	// 检查是否访问过
-	if s.visitedUrl[job.url] {
-		l4g.Info("visted job,continue. url:%s, depth:%d", job.url, job.depth)
-		return
+	//if s.visitedUrl[job.url] {
+	res := s.visitedUrl.Get(job.url)
+	if res != nil {
+		if res.(bool) == true {
+			l4g.Info("visted job,continue. url:%s, depth:%d", job.url, job.depth)
+			return
+		}
 	}
 	// 判断是否超出最大爬取深度
 	if job.depth > s.maxDepth {
 		l4g.Info("visted job,continue. url:%s, depth:%d", job.url, job.depth)
 		return
 	}
+	l4g.Debug("debug...job:%+v", job)
 	// 标记为访问过
-	s.visitedUrl[job.url] = true
+	//s.visitedUrl[job.url] = true
+	s.visitedUrl.Set(job.url, true)
 	resp, err := http.Get(job.url)
 	if err != nil {
 		l4g.Error("Failed to crawl %s, err[%s]", job.url, err)
 		return
 	} else {
-		//l4g.Info("http response:%s", resp)
+		l4g.Info("http response:%s", resp)
 	}
 	defer resp.Body.Close()
 	// 解析Html, 获取新的url并入任务队列
@@ -257,7 +275,8 @@ func NewSpider(seedUrls []string, config conf.SpiderStruct, confpath string) *Sp
 	s.crawlTimeout = config.CrawlTimeout
 	s.targetUrl = regexp.MustCompile(config.TargetUrl)
 	s.jobs = jobs
-	s.visitedUrl = make(map[string]bool)
+	//s.visitedUrl = make(map[string]bool)
+	s.visitedUrl = beegomap.NewBeeMap()
 	s.threadCount = config.ThreadCount
 
 	return s
